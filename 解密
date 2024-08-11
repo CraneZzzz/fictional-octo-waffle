@@ -1,0 +1,182 @@
+#include <gtk/gtk.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+
+// RSA 辅助函数
+unsigned long mod_exp(unsigned long base, unsigned long exp, unsigned long mod) {
+    unsigned long result = 1;
+    while (exp > 0) {
+        if (exp % 2 == 1) {
+            result = (result * base) % mod;
+        }
+        base = (base * base) % mod;
+        exp /= 2;
+    }
+    return result;
+}
+
+// 交换元素的函数
+void swap(unsigned char *S, int i, int j) {
+    unsigned char temp = S[i];
+    S[i] = S[j];
+    S[j] = temp;
+}
+
+// RC4 初始化
+void rc4_init(unsigned char *key, int keylen, unsigned char *S) {
+    unsigned char T[256];
+    for (int i = 0; i < 256; i++) {
+        S[i] = i;
+        T[i] = key[i % keylen];
+    }
+
+    int j = 0;
+    for (int i = 0; i < 256; i++) {
+        j = (j + S[i] + T[i]) % 256;
+        swap(S, i, j);
+    }
+}
+
+// RC4 加密
+void rc4_encrypt(unsigned char *data, int datalen, unsigned char *key, int keylen, unsigned char *output) {
+    unsigned char S[256];
+    rc4_init(key, keylen, S);
+
+    int i = 0;
+    int j = 0;
+    for (int n = 0; n < datalen; n++) {
+        i = (i + 1) % 256;
+        j = (j + S[i]) % 256;
+        swap(S, i, j);
+        int K = S[(S[i] + S[j]) % 256];
+        output[n] = data[n] ^ K;
+    }
+}
+
+// RC4 解密（与加密相同）
+void rc4_decrypt(unsigned char *data, int datalen, unsigned char *key, int keylen, unsigned char *decrypted) {
+    rc4_encrypt(data, datalen, key, keylen, decrypted);  // RC4 加密和解密是对称的
+}
+
+// RSA 单块解密
+unsigned long rsa_decrypt_block(unsigned long block, unsigned long d, unsigned long n) {
+    return mod_exp(block, d, n);
+}
+
+// 从路径中提取文件名并生成带有给定后缀的新文件名
+void generate_decrypted_filename(const char *encrypted_file, char *decrypted_file, const char *suffix) {
+    const char *filename = strrchr(encrypted_file, '/');
+    if (!filename) {
+        filename = encrypted_file;
+    } else {
+        filename++;
+    }
+    snprintf(decrypted_file, 256, "%s%s", filename, suffix);
+}
+
+// "解密"按钮的回调函数
+void on_decrypt_button_clicked(GtkWidget *widget, gpointer data) {
+    GtkWidget *file_chooser = GTK_WIDGET(data);
+    gchar *encrypted_file = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(file_chooser));
+
+    // 读取加密数据
+    FILE *infile = fopen(encrypted_file, "rb");
+    if (!infile) {
+        perror("无法打开加密文件");
+        return;
+    }
+    fseek(infile, 0, SEEK_END);
+    long file_size = ftell(infile);
+    fseek(infile, 0, SEEK_SET);
+    unsigned char *encrypted = (unsigned char *)malloc(file_size);
+    fread(encrypted, 1, file_size, infile);
+    fclose(infile);
+
+    // 读取加密的 RC4 密钥
+    FILE *keyfile = fopen("rc4_key_encrypted.bin", "rb");
+    if (!keyfile) {
+        perror("无法打开 RC4 密钥文件");
+        free(encrypted);
+        return;
+    }
+    fseek(keyfile, 0, SEEK_END);
+    long keyfile_size = ftell(keyfile);
+    fseek(keyfile, 0, SEEK_SET);
+    unsigned long *encrypted_rc4_key = (unsigned long *)malloc(keyfile_size);
+    fread(encrypted_rc4_key, sizeof(unsigned long), keyfile_size / sizeof(unsigned long), keyfile);
+    fclose(keyfile);
+
+    // RSA 私钥
+    unsigned long d = 2753; // 私有指数
+    unsigned long n = 3233;  // 模数
+
+    // 使用 RSA 解密 RC4 密钥
+    int keylen = keyfile_size / sizeof(unsigned long);
+    unsigned char rc4_key[keylen];
+    for (int i = 0; i < keylen; i++) {
+        rc4_key[i] = (unsigned char)rsa_decrypt_block(encrypted_rc4_key[i], d, n);
+    }
+
+    // 使用 RC4 解密数据
+    unsigned char *decrypted = (unsigned char *)malloc(file_size);
+    rc4_decrypt(encrypted, file_size, rc4_key, keylen, decrypted);
+
+    // 生成解密后的文件名
+    char decrypted_file[256];
+    generate_decrypted_filename(encrypted_file, decrypted_file, "_decrypted.txt");
+
+    // 保存解密后的数据
+    FILE *outfile = fopen(decrypted_file, "wb");
+    if (!outfile) {
+        perror("无法打开输出文件");
+        free(encrypted);
+        free(decrypted);
+        free(encrypted_rc4_key);
+        return;
+    }
+    fwrite(decrypted, 1, file_size, outfile);
+    fclose(outfile);
+
+    // 清理资源
+    free(encrypted);
+    free(decrypted);
+    free(encrypted_rc4_key);
+
+    g_print("解密完成，文件已保存为 '%s'.\n", decrypted_file);
+    gtk_widget_destroy(GTK_WIDGET(data));  // 关闭文件选择对话框
+}
+
+int main(int argc, char *argv[]) {
+    gtk_init(&argc, &argv);
+
+    // 创建主窗口
+    GtkWidget *window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    gtk_window_set_title(GTK_WINDOW(window), "文件解密");
+    gtk_container_set_border_width(GTK_CONTAINER(window), 10);
+    gtk_window_set_default_size(GTK_WINDOW(window), 300, 100);
+
+    // 创建垂直布局框
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
+    gtk_container_add(GTK_CONTAINER(window), vbox);
+
+    // 创建文件选择按钮
+    GtkWidget *file_chooser_button = gtk_file_chooser_button_new("选择加密文件", GTK_FILE_CHOOSER_ACTION_OPEN);
+    gtk_box_pack_start(GTK_BOX(vbox), file_chooser_button, TRUE, TRUE, 0);
+
+    // 创建解密按钮
+    GtkWidget *decrypt_button = gtk_button_new_with_label("解密");
+    gtk_box_pack_start(GTK_BOX(vbox), decrypt_button, TRUE, TRUE, 0);
+
+    // 连接信号
+    g_signal_connect(window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
+    g_signal_connect(decrypt_button, "clicked", G_CALLBACK(on_decrypt_button_clicked), file_chooser_button);
+
+    // 显示所有控件
+    gtk_widget_show_all(window);
+
+    gtk_main();
+
+    return 0;
+}
