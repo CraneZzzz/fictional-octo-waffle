@@ -1,0 +1,60 @@
+//生成MAC并加密：
+
+    // 计算 MAC
+    unsigned char mac;
+    compute_mac(encrypted, file_size, rc4_key, keylen, &mac);
+
+    // RSA 公钥
+    unsigned long e = 65537; // 公共指数
+    unsigned long n = 3233;  // 模数（示例值）
+
+    // 使用 RSA 加密 MAC
+    unsigned long encrypted_mac = rsa_encrypt_block(mac, e, n);
+
+    // 保存加密的 MAC
+    char mac_filename[256];
+    snprintf(mac_filename, sizeof(mac_filename), "%s_mac_encrypted.bin", filename);
+    FILE *macfile = fopen(mac_filename, "wb");
+    if (!macfile) {
+        perror("无法打开 MAC 文件");
+        free(data);
+        free(encrypted);
+        return;
+    }
+    fwrite(&encrypted_mac, sizeof(unsigned long), 1, macfile);
+    fclose(macfile);
+
+//MAC解密并验证：
+
+    // RSA 私钥
+    unsigned long d = 2753; // 私有指数
+    unsigned long n = 3233;  // 模数
+
+    // 读取加密的 MAC
+    char mac_filename[256];
+    snprintf(mac_filename, sizeof(mac_filename), "%s_mac_encrypted.bin", encrypted_file);
+    FILE *macfile = fopen(mac_filename, "rb");
+    if (!macfile) {
+        perror("无法打开加密的 MAC 文件");
+        free(encrypted);
+        free(encrypted_rc4_key);
+        return;
+    }
+    unsigned long encrypted_mac;
+    fread(&encrypted_mac, sizeof(unsigned long), 1, macfile);
+    fclose(macfile);
+
+    // 使用 RSA 解密 MAC
+    unsigned char mac = (unsigned char)rsa_decrypt_block(encrypted_mac, d, n);
+
+    // 验证 MAC
+    unsigned char computed_mac;
+    compute_mac(encrypted, file_size, rc4_key, keylen, &computed_mac);
+    if (mac != computed_mac) {
+        fprintf(stderr, "MAC 验证失败。文件可能已被篡改。\n");
+        free(encrypted);
+        free(decrypted);
+        free(encrypted_rc4_key);
+        return;
+    }
+
