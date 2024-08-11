@@ -1,0 +1,188 @@
+#include <gtk/gtk.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+
+// RSA 辅助函数
+unsigned long mod_exp(unsigned long base, unsigned long exp, unsigned long mod) {
+    unsigned long result = 1;
+    while (exp > 0) {
+        if (exp % 2 == 1) {
+            result = (result * base) % mod;
+        }
+        base = (base * base) % mod;
+        exp /= 2;
+    }
+    return result;
+}
+
+// 交换元素的函数
+void swap(unsigned char *S, int i, int j) {
+    unsigned char temp = S[i];
+    S[i] = S[j];
+    S[j] = temp;
+}
+
+// RC4 初始化
+void rc4_init(unsigned char *key, int keylen, unsigned char *S) {
+    unsigned char T[256];
+    for (int i = 0; i < 256; i++) {
+        S[i] = i;
+        T[i] = key[i % keylen];
+    }
+
+    int j = 0;
+    for (int i = 0; i < 256; i++) {
+        j = (j + S[i] + T[i]) % 256;
+        swap(S, i, j);
+    }
+}
+
+// RC4 加密
+void rc4_encrypt(unsigned char *data, int datalen, unsigned char *key, int keylen, unsigned char *encrypted) {
+    unsigned char S[256];
+    rc4_init(key, keylen, S);
+
+    int i = 0;
+    int j = 0;
+    for (int n = 0; n < datalen; n++) {
+        i = (i + 1) % 256;
+        j = (j + S[i]) % 256;
+        swap(S, i, j);
+        int K = S[(S[i] + S[j]) % 256];
+        encrypted[n] = data[n] ^ K;
+    }
+}
+
+// 计算 MAC
+void compute_mac(unsigned char *data, int datalen, unsigned char *key, int keylen, unsigned char *mac) {
+    *mac = 0;
+    for (int i = 0; i < datalen; i++) {
+        *mac ^= data[i] ^ key[i % keylen];
+    }
+}
+
+// RSA 单块加密
+unsigned long rsa_encrypt_block(unsigned long block, unsigned long e, unsigned long n) {
+    return mod_exp(block, e, n);
+}
+
+// 加密文件函数
+void encrypt_file(const char *filename) {
+    // 读取待加密的数据
+    FILE *infile = fopen(filename, "rb");
+    if (!infile) {
+        perror("无法打开输入文件");
+        return;
+    }
+    fseek(infile, 0, SEEK_END);
+    long file_size = ftell(infile);
+    fseek(infile, 0, SEEK_SET);
+    unsigned char *data = (unsigned char *)malloc(file_size);
+    fread(data, 1, file_size, infile);
+    fclose(infile);
+
+    // RC4 密钥
+    unsigned char rc4_key[] = "21034530212";
+    int keylen = strlen((char *)rc4_key);
+
+    // 使用 RC4 加密数据
+    unsigned char *encrypted = (unsigned char *)malloc(file_size);
+    rc4_encrypt(data, file_size, rc4_key, keylen, encrypted);
+
+    // 保存加密数据
+    char encrypted_filename[256];
+    snprintf(encrypted_filename, sizeof(encrypted_filename), "%s_encrypted.txt", filename);
+    FILE *outfile = fopen(encrypted_filename, "wb");
+    if (!outfile) {
+        perror("无法打开输出文件");
+        free(data);
+        free(encrypted);
+        return;
+    }
+    fwrite(encrypted, 1, file_size, outfile);
+    fclose(outfile);
+
+    // 计算并保存 MAC
+    unsigned char mac;
+    compute_mac(encrypted, file_size, rc4_key, keylen, &mac);
+    char mac_filename[256];
+    snprintf(mac_filename, sizeof(mac_filename), "%s_mac.bin", filename);
+    FILE *macfile = fopen(mac_filename, "wb");
+    if (!macfile) {
+        perror("无法打开 MAC 文件");
+        free(data);
+        free(encrypted);
+        return;
+    }
+    fwrite(&mac, 1, 1, macfile);
+    fclose(macfile);
+
+    // RSA 公钥
+    unsigned long e = 65537; // 公共指数
+    unsigned long n = 3233;  // 模数
+
+    // 使用 RSA 加密 RC4 密钥
+    unsigned long encrypted_rc4_key[keylen];
+    for (int i = 0; i < keylen; i++) {
+        encrypted_rc4_key[i] = rsa_encrypt_block(rc4_key[i], e, n);
+    }
+
+    // 保存加密的 RC4 密钥
+    char key_filename[256];
+    snprintf(key_filename, sizeof(key_filename), "rc4_key_encrypted.bin", filename);
+    FILE *keyfile = fopen(key_filename, "wb");
+    if (!keyfile) {
+        perror("无法打开 RC4 密钥文件");
+        free(data);
+        free(encrypted);
+        return;
+    }
+    fwrite(encrypted_rc4_key, sizeof(unsigned long), keylen, keyfile);
+    fclose(keyfile);
+
+    // 清理资源
+    free(data);
+    free(encrypted);
+
+    printf("加密和 MAC 计算完成。\n");
+    printf("RC4 密钥已使用 RSA 加密并保存。\n");
+}
+
+// 文件选择回调函数
+void on_file_set(GtkFileChooserButton *button, gpointer user_data) {
+    const char *filename = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(button));
+    encrypt_file(filename);
+    gtk_label_set_text(GTK_LABEL(user_data), "文件加密成功。");
+}
+
+int main(int argc, char *argv[]) {
+    gtk_init(&argc, &argv);
+
+    // 创建一个新窗口
+    GtkWidget *window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    gtk_window_set_title(GTK_WINDOW(window), "文件加密器");
+    gtk_window_set_default_size(GTK_WINDOW(window), 400, 200);
+    g_signal_connect(window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
+
+    // 创建一个垂直箱容器
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
+    gtk_container_add(GTK_CONTAINER(window), vbox);
+
+    // 创建一个文件选择按钮
+    GtkWidget *file_chooser = gtk_file_chooser_button_new("选择一个文件", GTK_FILE_CHOOSER_ACTION_OPEN);
+    gtk_box_pack_start(GTK_BOX(vbox), file_chooser, TRUE, TRUE, 0);
+
+    // 创建一个标签以显示状态
+    GtkWidget *status_label = gtk_label_new("");
+    gtk_box_pack_start(GTK_BOX(vbox), status_label, TRUE, TRUE, 0);
+
+    // 连接文件选择按钮的信号
+    g_signal_connect(file_chooser, "file-set", G_CALLBACK(on_file_set), status_label);
+
+    // 显示所有小部件
+    gtk_widget_show_all(window);
+    gtk_main();
+    return 0;
+}
